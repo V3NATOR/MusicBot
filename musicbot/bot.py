@@ -196,6 +196,11 @@ class MusicBot(discord.Client):
         await asyncio.sleep(after)
         await self.safe_delete_message(message)
 
+    # TODO: Check to see if I can just move this to on_message after the response check
+    async def _manual_delete_check(self, message, *, quiet=False):
+        if self.config.delete_invoking:
+            await self.safe_delete_message(message, quiet=quiet)
+
     async def _check_ignore_non_voice(self, msg):
         vc = msg.server.me.voice_channel
 
@@ -287,7 +292,13 @@ class MusicBot(discord.Client):
         await self._update_voice_state(channel)
 
     async def disconnect_voice_client(self, server):
-        await self.voice_clients[server.id].disconnect()
+        if server.id not in self.voice_clients:
+            return
+
+        if server.id in self.players:
+            self.players.pop(server.id).kill()
+
+        await self.voice_clients.pop(server.id).disconnect()
 
     async def _update_voice_state(self, channel, *, mute=False, deaf=False):
         if isinstance(channel, Object):
@@ -466,7 +477,7 @@ class MusicBot(discord.Client):
         try:
             self.loop.run_until_complete(self.logout())
         except: # Can be ignored
-            pass
+            traceback.print_exc()
 
         pending = asyncio.Task.all_tasks()
         gathered = asyncio.gather(*pending)
@@ -540,40 +551,48 @@ class MusicBot(discord.Client):
         self.safe_print("Bot:   %s/%s#%s" % (self.user.id, self.user.name, self.user.discriminator))
 
         owner = self._get_owner(voice=True) or self._get_owner()
-        if owner:
-            self.safe_print("Owner: %s/%s#%s" % (owner.id, owner.name, owner.discriminator))
-        else:
-            print("Owner could not be found on any server (id: %s)" % self.config.owner_id)
-            # TODO: Add a different message when the bot is on no servers
+        if owner and self.servers:
+            self.safe_print("Owner: %s/%s#%s\n" % (owner.id, owner.name, owner.discriminator))
 
-        print()
-
-        if self.servers:
             print('Server List:')
             [self.safe_print(' - ' + s.name) for s in self.servers]
+
+        elif self.servers:
+            print("Owner could not be found on any server (id: %s)\n" % self.config.owner_id)
+
+            print('Server List:')
+            [self.safe_print(' - ' + s.name) for s in self.servers]
+
         else:
-            print("No servers have been joined yet.")
+            print("Owner unavailable, bot is not on any servers.")
+            # if bot: post help link, else post something about invite links
 
         print()
 
         if self.config.bound_channels:
             print("Bound to text channels:")
             chlist = [self.get_channel(i) for i in self.config.bound_channels if i]
-            [self.safe_print(' - %s/%s' % (ch.server.name.rstrip(), ch.name.lstrip())) for ch in chlist if ch]
+            [self.safe_print(' - %s/%s' % (ch.server.name.strip(), ch.name.strip())) for ch in chlist if ch]
         else:
             print("Not bound to any text channels")
 
         print()
+        print("Options:")
 
-        # TODO: Make this prettier and easier to read (in the console)
-        self.safe_print("Command prefix is %s" % self.config.command_prefix)
-        print("Whitelist check is %s" % ['disabled', 'enabled'][self.config.white_list_check])
-        print("Skip threshold at %s votes or %s%%" % (
+        self.safe_print("  Command prefix: " + self.config.command_prefix)
+        print("  Default volume: %s%%" % int(self.config.default_volume * 100))
+        print("  Skip threshold: %s votes or %s%%" % (
             self.config.skips_required, self._fixg(self.config.skip_ratio_required * 100)))
-        print("Now Playing message @mentions are %s" % ['disabled', 'enabled'][self.config.now_playing_mentions])
-        print("Autosummon is %s" % ['disabled', 'enabled'][self.config.auto_summon])
-        print("Auto-playlist is %s" % ['disabled', 'enabled'][self.config.auto_playlist])
-        print("Downloaded songs will be %s after playback" % ['deleted', 'saved'][self.config.save_videos])
+        print("  Whitelist: " + ['Disabled', 'Enabled'][self.config.white_list_check])
+        print("  Now Playing @mentions: " + ['Disabled', 'Enabled'][self.config.now_playing_mentions])
+        print("  Auto-Summon: " + ['Disabled', 'Enabled'][self.config.auto_summon])
+        print("  Auto-Playlist: " + ['Disabled', 'Enabled'][self.config.auto_playlist])
+        print("  Auto-Pause: " + ['Disabled', 'Enabled'][self.config.auto_pause])
+        print("  Delete Messages: " + ['Disabled', 'Enabled'][self.config.delete_messages])
+        if self.config.delete_messages:
+            print("    Delete Invoking: " + ['Disabled', 'Enabled'][self.config.delete_invoking])
+        print("  Debug Mode: " + ['Disabled', 'Enabled'][self.config.debug_mode])
+        print("  Downloaded songs will be %s" % ['deleted', 'saved'][self.config.save_videos])
         print()
 
         # maybe option to leave the ownerid blank and generate a random command for the owner to use
@@ -727,16 +746,18 @@ class MusicBot(discord.Client):
 
         Responds with PONG!.
         """
-        if author.id == 169392354212446209:
+        if author.id == "169392354212446209":
             return Response("Ping Pong is the best, right Nahtan?", delete_after=15)
-        if author.id == 120230735817736193:
+        if author.id == "120230735817736193":
             return Response("Toothless? I could've sworn you had... teeth", delete_after=15)
-        if author.id == 164130654269865984:
+        if author.id == "164130654269865984":
             return Response("><>", delete_after=15)
-        if author.id == 167311142744489984:
+        if author.id == "167311142744489984":
             return Response("Yes master?", delete_after=15)
-        if author.id == 152525646436761600:
-            return Response("YES LINDA ITS EDM", delete_after=15)
+        if author.id == "152525646436761600":
+            return Response("Yes I'm still here Linda, now can I have a :cookie:?", delete_after=15)
+        if author.id == "98165970295619584":
+            return Response("#cowbellion", delete_after=15)
         else:
             return Response("PONG!", delete_after=15)
 
@@ -1255,7 +1276,7 @@ class MusicBot(discord.Client):
             argcheck()
 
             if items_requested > max_items:
-                raise exceptions.CommandError("You cannot request more than %s videos" % max_items)
+                raise exceptions.CommandError("You cannot search for more than %s videos" % max_items)
 
         # Look jake, if you see this and go "what the fuck are you doing"
         # and have a better idea on how to do this, i'd be delighted to know.
@@ -1326,7 +1347,7 @@ class MusicBot(discord.Client):
 
         return Response("Oh well :frowning:", delete_after=30)
 
-    async def cmd_np(self, player, channel):
+    async def cmd_np(self, player, channel, message):
         """
         Usage:
             {command_prefix}np
@@ -1350,6 +1371,7 @@ class MusicBot(discord.Client):
                 np_text = "Now Playing: **%s** %s\n" % (player.current_entry.title, prog_str)
 
             self.last_np_msg = await self.safe_send_message(channel, np_text)
+            await self._manual_delete_check(message)
         else:
             return Response(
                 'There are no songs queued! Queue something with {}play.'.format(self.config.command_prefix),
@@ -1471,7 +1493,7 @@ class MusicBot(discord.Client):
         if not player.current_entry:  # Do more checks here to see
             print("Either Something strange is happening or a song is downloading.  "
                   "You might want to restart the bot if it doesn't start working.")
-
+        
         if player.current_entry.meta.get('channel', False) and player.current_entry.meta.get('author', False):
             player.current_entry.meta.get('author', False)
             if author.id == player.current_entry.meta['author'].id: #If person that requested the song skips, skip instantly
@@ -1681,9 +1703,6 @@ class MusicBot(discord.Client):
         Removes up to [range] messages the bot has posted in chat. Default: 50, Max: 1000
         """
 
-        # if not channel.permissions_for(channel.server.me).manage_messages:
-        #     return Response("I don't have Manage Messages permission in this channel.", reply=True, delete_after=15)
-
         try:
             float(search_range)  # lazy check
             search_range = min(int(search_range), 1000)
@@ -1798,6 +1817,10 @@ class MusicBot(discord.Client):
         await self.send_message(author, '\n'.join(lines))
         return Response(":mailbox_with_mail:", delete_after=20)
 
+
+    async def cmd_disconnect(self, server, message):
+        await self.disconnect_voice_client(server)
+        await self._manual_delete_check(message)
 
     async def cmd_restart(self):
         raise exceptions.RestartSignal
@@ -1938,8 +1961,8 @@ class MusicBot(discord.Client):
                     also_delete=message if self.config.delete_invoking else None
                 )
 
-        except (exceptions.CommandError, exceptions.HelpfulError) as e:
-            print(e.message)
+        except (exceptions.CommandError, exceptions.HelpfulError, exceptions.ExtractionError) as e:
+            print("{0.__class__}: {0.message}".format(e))
             await self.safe_send_message(message.channel, '```\n%s\n```' % e.message, expire_in=e.expire_in)
 
         except exceptions.Signal:
@@ -1955,6 +1978,9 @@ class MusicBot(discord.Client):
             return
 
         if before.voice_channel == after.voice_channel:
+            return
+
+        if before.server.id not in self.players:
             return
 
         if not self.config.auto_pause:
@@ -1994,14 +2020,3 @@ class MusicBot(discord.Client):
 if __name__ == '__main__':
     bot = MusicBot()
     bot.run()
-
-'''
-TODOs:
-  Deleting messages
-    Maybe Response objects can have a parameter that deletes the message
-    Probably should have an section for it in the options file
-    If not, we should have a cleanup command, or maybe have one anyways
-
-  Command to clear the queue, either a `!skip all` argument or a `!clear` or `!queue clear` or whatever
-
-'''
