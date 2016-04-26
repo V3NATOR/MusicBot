@@ -9,3 +9,6 @@ discord.log
 config/options.ini
 config/permissions.ini
 config/autoplaylist.txt
+.vscode
+.project
+.pydevproject
